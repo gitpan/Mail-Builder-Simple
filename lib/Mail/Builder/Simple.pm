@@ -1,0 +1,803 @@
+package Mail::Builder::Simple;
+
+use strict;
+use warnings;
+use Email::Send();
+use Mail::Builder;
+use Class::Accessor::Fast;
+use Encode;
+use Carp qw/confess/;
+use Config::Any;
+use base 'Mail::Builder';
+
+our $VERSION = '0.01';
+
+__PACKAGE__->mk_accessors(qw/mail_client template_args template_vars/);
+
+sub new {
+my $class = shift;
+my $args = ref($_[0]) eq 'HASH' ? $_[0] : {@_} or confess "Invalid hash";
+
+my $self = $class->SUPER::new();
+bless $self, $class;
+
+$self->add_args($args);
+
+#If just testing
+if ($args->{mail_client}->{mailer} and $args->{mail_client}->{mailer} eq 'Test') {
+require Email::Send::Test;
+Email::Send::Test->clear;
+}
+
+return bless $self, $class;
+}
+
+sub add_args {
+my $self = shift;
+my $args = ref($_[0]) eq 'HASH' ? $_[0] : {@_} or confess "Invalid hash";
+
+$self->mail_client($args->{mail_client}) if $args->{mail_client};
+$self->template_args($args->{template_args}) if $args->{template_args};
+$self->template_vars($args->{template_vars}) if $args->{template_vars};
+
+if (my $config_file = $args->{config_file}) {
+my $conf = Config::Any->load_files({
+files => [$config_file],
+use_ext => 1,
+driver_args => {General => {-UTF8 => 1}},
+});
+
+delete $args->{config_file};
+
+$self->add_args($conf->[0]->{$config_file});
+}
+
+foreach my $field(keys %$args) {
+next unless $field =~ /^(?:from|reply|organization|returnpath|sender|priority|subject|plaintext|htmltext|language|to|cc|bcc|attachment|image|mailer)$/;
+
+my $value = $args->{$field};
+
+if ($value and ref($value) eq 'ARRAY') {
+#If the value is an arrayref
+if ($value->[0] and $value->[0] eq 'MORE') {
+#There are more items
+shift @$value;
+$self->_process_array($args, $field, $value);
+}
+elsif ($value->[0] and ref($value->[0]) eq 'ARRAY') {
+#There are more items
+$self->_process_array($args, $field, $value);
+}
+elsif ($value->[0] and !ref($value->[0])) {
+#There is an item with one or more fields
+$self->_process_item($args, $field, $value);
+}
+else {
+confess "The items inside the arrayref should be defined scalars or arrayrefs.";
+}
+}
+elsif ($value and !ref($value)) {
+#The value is a scalar
+$self->_set_or_add($field, $value);
+}
+else {
+confess "The value for $field should be a defined scalar or an arrayref";
+}
+}
+}
+
+sub _process_array {
+my ($self, $args, $field, $value) = @_;
+
+foreach my $item(@$value) {
+$self->_process_item($args, $field, $item);
+}
+}
+
+sub _process_item {
+my ($self, $args, $field, $item) = @_;
+
+if (ref($item) eq 'ARRAY') {
+#This item is an arrayref
+if ($item->[-1] =~ /^:(.+)/) {
+#This item is a template
+my $result = $self->_process_template($args, $item, $field);
+$self->_set_or_add($field, $result);
+}
+else {
+#It is not a template
+$self->_set_or_add($field, @$item);
+}
+}
+elsif(!ref($item)) {
+#It is a scalar
+$self->_set_or_add($field, $item);
+}
+else {
+confess "The elements of the array of array could be just scalars.";
+}
+}
+
+sub _process_template {
+my ($self, $args, $item, $field) = @_;
+
+my $type = substr($item->[-1], 1);
+($type, my $source) = split /-/, $type;
+$source ||= 'file';
+delete $item->[-1];
+
+#Get and overwrite template_args
+my $template_args = $self->template_args;
+if ($args->{template_args}) {
+foreach (keys %{$args->{template_args}}) {
+$template_args->{$_} = $args->{template_args}->{$_};
+}
+}
+
+#If this template has its own settings:
+if (ref($item->[-1]) eq 'HASH') {
+my $template_settings = pop @$item;
+foreach(keys %$template_settings) {
+#Insert and overwrite the new template settings:
+$template_args->{$_} = $template_settings->{$_};
+}
+}
+
+#Get and overwrite template_vars
+my $template_vars = $self->template_vars;
+if ($args->{template_vars}) {
+foreach (keys %{$args->{template_vars}}) {
+$template_vars->{$_} = $args->{template_vars}->{$_};
+}
+}
+
+#If this template has its own variables:
+if (ref($item->[-1]) eq 'HASH') {
+my $template_variables = pop @$item;
+foreach(keys %$template_variables) {
+#Insert and overwrite the template vars:
+$template_vars->{$_} = $template_variables->{$_};
+}
+}
+
+eval "require Mail::Builder::Simple::$type";
+
+my $t = "Mail::Builder::Simple::$type"->new($template_args, $template_vars);
+
+$item->[0] = $t->process($item->[0], $source);
+
+if ($field eq 'attachment') {
+return Mail::Builder::Attachment::Data->new(@$item);
+}
+else {
+return $item;
+}
+}
+
+sub _set_or_add {
+my ($self, $field, @value) = @_;
+
+if ($field =~ /^(?:from|reply|organization|returnpath|sender|priority|subject|plaintext|htmltext|language|mailer)$/) {
+$self->$field(@value);
+}
+else {
+if ($self->$field) {
+$self->$field->add(@value);
+}
+else {
+$self->$field(@value);
+}
+}
+}
+
+sub send {
+my $self = shift;
+my $args = ref($_[0]) eq 'HASH' ? $_[0] : {@_} or confess "Invalid hash";
+
+#Add message fields:
+$self->add_args($args) if $args;
+
+#Add custom headers if there are:
+my $entity = $self->build_message;
+
+foreach my $field(keys %$args) {
+next if $field =~ /^(?:from|reply|organization|returnpath|sender|priority|subject|plaintext|htmltext|language|to|cc|bcc|attachment|image|mailer|mail_client|template_args|template_vars)$/;
+
+$entity->head->replace($field, Encode::encode('MIME-Header', $args->{$field}));
+}
+
+my $mail_client = $self->mail_client;
+my $mailer = $mail_client->{mailer};
+$mailer = 'Sendmail' unless $mailer;
+
+my @mailer_args = ();
+if (ref($mail_client->{mailer_args}) eq 'HASH') {
+@mailer_args = %{$mail_client->{mailer_args}};
+}
+elsif (ref($mail_client->{mailer_args}) eq 'ARRAY') {
+@mailer_args = @{$mail_client->{mailer_args}};
+}
+
+#print $entity->stringify;exit;
+Email::Send::send $mailer => $entity->stringify, @mailer_args;
+
+if ($mailer eq 'Test') {
+my @emails = Email::Send::Test->emails;
+$self->{successfully_sent} = \@emails;
+}
+
+#Reset To, Cc and BcC:
+$self->to->reset;
+$self->cc->reset;
+$self->bcc->reset;
+}
+
+sub emails_number {
+my $self = shift;
+return scalar @{$self->{successfully_sent}};
+}
+
+sub emails {
+my $self = shift;
+return @{$self->{successfully_sent}} ;
+}
+
+1;
+
+__END__
+
+=head1 NAME
+
+Mail::Builder::Simple - Send UTF-8 HTML and text email with attachments and inline images, eventually using templates
+
+=head1 SYNOPSIS
+
+ # Send a plain text email with Sendmail:
+
+ use Mail::Builder::Simple;
+
+ my $mail = Mail::Builder::Simple->new;
+
+ $mail->send(
+  from => 'me@host.com',
+  to => 'you@yourhost.com',
+  subject => 'The subject with UTF-8 chars',
+  plaintext => "Hello,\n\nHow are you?\n",
+ );
+
+ # Send the email with an SMTP server:
+
+ $mail->send(
+  mail_client => {
+   mailer => 'SMTP',
+   mailer_args => [Host => 'smtp.host.com'],
+  },
+  from => 'me@host.com',
+  to => 'you@yourhost.com',
+  subject => 'The subject with UTF-8 chars',
+  plaintext => "Hello,\n\nHow are you?\n",
+ );
+
+ # Send a text and HTML email with an attachment and an inline image
+ # Specify the displayed name for To: and From: fields and add other headers
+
+ $mail->send(
+  from => ['me@host.com', 'My Name'],
+  to => ['you@yourhost.com', 'Your Name'],
+  reply => 'foo@anotherhost.com',
+  subject => 'The subject with UTF-8 chars',
+  plaintext => "Hello,\n\nHow are you?\n\n",
+  htmltext => "<h1>Hello,</h1> <p>How are you?</p>",
+  attachment => 'file.pdf',
+  image => 'logo.png',
+  priority => 1,
+  mailer => 'My Mailer 0.01',
+ );
+
+=head1 DESCRIPTION
+
+C<Mail::Builder::Simple> can create email messages with L<Mail::Builder> and send them with L<Email::Send>. It has the following features:
+
+=over
+
+=item UTF-8 encoding
+
+C<Mail::Builder::Simple> automaticly encodes the body and headers of the email messages to UTF-8, so they can display the special chars in other languages than English correctly.
+
+=item attachments
+
+C<Mail::Builder::Simple> allow adding one or more attachments to the message, without needing to specify their Content-Type if you don't want to.
+
+The attachments can be files saved on the disk or can be created on the fly, eventually using templates.
+
+=item images
+
+C<Mail::Builder::Simple> can add inline images that will be displayed in the HTML part of the message.
+
+=item templates
+
+The body and the attachments can be created using a template, either using external template files or templates from scalar variables.
+
+C<Mail::Builder::Simple> uses other modules like L<Mail::Builder::Simple::TT> and L<Mail::Builder::Simple::HTML::Template> in order to allow using L<Template|Template-Toolkit> or L<HTML::Template> templates.
+
+For using another templating system, you can create a module like these 2 modules.
+
+=item mail sender
+
+C<Mail::Builder::Simple> can send the email messages using any of the mailers allowed by L<Email::Send> and some of them are: Sendmail, Qmail, SMTP, Gmail, NNTP.
+
+Some of these mailers might not be offered by the L<Email::Send> main distribution, and you might need to install separate modules from CPAN (Such an example is L<Email::Send::Gmail>.)
+
+=item configuration file
+
+All the parameters that can be sent to the C<new()> function can be also stored in a configuration file, and this file can be used in more applications.
+
+For example, you could save the mailer type, the mailer host, username and password and maybe the C<From:> field in a configuration file, so you won't need to specify them each time when you want to send an email.
+
+=back
+
+=head1 Functions
+
+Mail::Builder::Simple offers the following functions:
+
+=over
+
+=item new()
+
+This is the constructor of the C<Mail::Builder::Simple> object. This object is a L<Mail::Builder> object also, so you can use the methods from Mail::Builder on it if you want.
+
+=item send()
+
+This function sends the email. After sending the email, it cleans the C<To:>, C<CC:> and C<BCC:> fields, so you can send the already built message to somebody else if you want, needing to specify only the recipient's email address.
+
+=back
+
+These 2 functions can receive a hash with parameters which have the keys explained below.
+
+=head1 Parameters
+
+=head2 mail_client
+
+This parameter is optional.
+
+It is a hashref with all the options needed to configure L<Email::Send> for sending the email messages.
+
+It looks like:
+
+ mail_client => {
+  mailer => 'SMTP',
+  mailer_args => [Host => 'smtp.host.com'],
+ },
+
+where the mailer can be 'SMTP', 'Sendmail', 'Qmail', 'Gmail', 'NNTP', or other types supported by Email::Send.
+
+C<mailer_args> receives all the configuration options that might be required by the specified mailer.
+
+For example, for sending email with an SMTP host that require authentication, you should use:
+
+ mailer_args => {
+  mailer => 'SMTP',
+  mailer_args => [
+   Host => 'smtp.host.com',
+   username => 'the_user',
+   password => 'the_password',
+  ],
+ },
+
+If the parameter C<mail_client> is not specified, the default mailer that is used is sendmail.
+
+=head2 template_args
+
+This parameter is optional.
+
+It is a hashref with all the arguments neede by the templating system you are using for creating the email body or the attachments.
+
+C<template_args> can receive any kind of parameters, depending on the parameters which are accepted by the templating system used. C<Mail::Builder::Simple> allows using more templating systems even for creating a single email message. If more templating systems are used to create an email message, all the templates will use the arguments from the hashref C<template_args> unless overwritten, as you will see.
+
+It could look like:
+
+ template_args => {
+  INCLUDE_PATH => '/path/to/templates', #default "."
+  ENCODING => 'UTF-8', #The default is UTF-8 anyway
+ },
+
+=head2 template_vars
+
+This parameter is optional.
+
+It is a hashref with the pairs of variables from the templates and their values.
+
+An example:
+
+ template_vars => {
+  name => 'Gil Bates',
+  preferences => ['pizza', 'yogurt', 'blondes'],
+ },
+
+The variables from C<template_vars> will be used by all the templates which are used for creating the email message, unless some of them are overwritten as you will see.
+
+=head2 email message fields
+
+These are the fields that create the email message. They are: C<from, to, cc, bcc, subject, plaintext, htmltext, attachment, image, priority, reply, organization, returnpath, sender, language, mailer>.
+
+There are many ways of using these fields, and I will explain them below.
+
+=head2 config_file
+
+This parameter is optional.
+
+It shows the path to a configuration file that holds some parameters you don't want to specify in each program.
+
+The configuration file can be any type of file supported by L<Config::Any>: Apache config style (Config::General), JSON, INI files, XML, YAML or perl code.
+
+Here is an example of a configuration file that uses L<Config::General>:
+(/home/user/email.conf)
+
+ <mail_client>
+  mailer SMTP
+  <mailer_args>
+   Host smtp.host.com
+   username user
+   password passwd
+  </mailer_args>
+ </mail_client>
+ from user@host.com
+
+This configuration file contains options not only for the mailer, but it also contains the message field C<From:> which wouldn't need to be specified when sending an email.
+
+Here is a program that sends an email using this configuration file:
+
+ use Mail::Builder::Simple;
+
+ my $mail = Mail::Builder::Simple->new(config_file => '/home/user/email.conf');
+
+ $mail->send(
+  to => 'you@yourhost.com',
+  subject => 'The subject',
+  htmltext => '<h1>Hello</h1> How are you?',
+ );
+
+As all other parameters shown until now, C<config_file> can be sent to both C<new()> and C<send()> functions.
+
+=head2 other email message headers
+
+You might need to include in your message some headers which are not in the list shown above. You can also add them as separate parameters, but they need to be capitalised exactly how they should appear in the email message.
+
+These headers overwrite the previous set headers that have the same name and they can be sent as parameters only to the C<send()> method, not to the L<new()>.
+
+Here is an example of including the header C<X-My-Special-Header>:
+
+ $mail->send(
+  to => 'you@yourhost.com',
+  subject => 'The subject',
+  plaintext => 'The body',
+  'X-My-Special-Header' => 'This is my header',
+ );
+
+=head1 Using the email message fields
+
+=head2 to, cc, bcc
+
+Here are a few ways of using the C<To:> field:
+
+As parameters to the C<new()> or C<send()> functions:
+
+Set a single email address for the C<To:> field:
+
+ to => 'you@host.com',
+
+Set a single address and set the name that should be displayed in the C<To:> field:
+
+ to => ['you@host.com', 'Your Name - with UTF-8 chars'],
+
+Set more email addresses for the C<To:> field in 2 ways:
+
+ to => ['MORE', 'you@host.com', 'he@host2.com', 'she@host3.com'],
+ or
+ to => [['you@host.com'], ['he@host2.com'], ['she@host3.com']],
+
+Set more email addresses for the C<To:> field, and also set the names that should be displayed:
+
+ to => [['you@host.com', 'Your Name'], ['he@host2.com', 'His Name']],
+
+or as a method to the C<Mail::Builder::Simple> object:
+
+Set an email address for the C<To:> field:
+
+ $mail->to('you@host.com');
+
+Set an email address for the C<To:> field, and also set the name which is displayed:
+
+ $mail->to('you@host.com', 'Your Name');
+
+Add the email address and the name which is displayed in the C<To:> field. You can repeat this for more times.
+
+ $mail->to->add('you@host.com');
+ $mail->to->add('he@host2.com', 'His Name');
+
+You can set the C<CC:> or C<BCC:> fields of the message in the same way.
+
+=head2 from
+
+The C<From:> field can be set using:
+
+ from => 'me@myhost.com',
+ or
+ from => ['me@myhost.com', 'My Name'],
+ or
+ $mail->from('me@myhost.com');
+ or
+ $mail->from('me@myhost.com', 'My Name');
+
+=head2 subject
+
+You can specify the subject field as:
+
+ subject => 'The subject',
+ or
+ $mail->subject('The subject');
+
+=head2 plaintext, htmltext
+
+C<Mail::Builder::Simple> can create a plain-text message if you provide just the plaintext part, or a multipart message if you offer the htmltext also. You can even provide just the htmltext, and it will create the plaintext part automaticly.
+
+You can create the body of the message using:
+
+ plaintext => "Hello,\n\nHow are you?",
+ htmltext => "<h1>Hello,</h1> <p>How are you?</p>",
+
+=head2 attachments
+
+The attachments can be added as parameters to C<new()> and C<send()> methods.
+
+Attach a file without specifying an alternative name and its Content-Type:
+
+ attachment => 'file.pdf',
+
+Attach a file specifying an alternative name and its Content-Type:
+
+ attachment => ['/path/to/file', 'filename.pdf', 'application/pdf'],
+
+Attach more file without specifying alternative names and Content-Type in 2 ways:
+
+ attachment => ['MORE', 'file1.pdf', 'file2.doc'],
+ or
+ attachment => [['file1.pdf'], ['file2.doc'], ['file3.html']],
+
+Attach more files specifying their alternative names and Content-Type:
+
+ attachment => [
+  ['file1', 'file1.pdf', 'application/pdf'],
+  ['file2', 'file2.pdf', 'application/pdf'],
+ ],
+
+or attach files using methods of the C<Mail::Builder::Simple> object. You can repeat this for more times:
+
+ $mail->attachment->add('file1.pdf');
+ or
+ $mail->attachment->add('file', 'file.pdf', 'application/pdf');
+
+=head2 images
+
+C<Mail::Builder::Simple> allows attaching inline images that won't appear as attachments, but they will be displayed in the HTML part of the mail message.
+
+You can add them as parameters to the C<new()> or C<send()> functions.
+
+Add an inline image without specifying an alternative ID:
+
+ image => 'image.png',
+
+Add an inline image and specify an alternative ID:
+
+ image => ['/path/to/image.png', 'image_id'],
+
+Add more inline images without specifying an alternative ID:
+
+ image => ['MORE', 'image1.png', 'image2.gif', 'image3.jpg'],
+ or
+image => [['image1.png'], ['image2.gif'], ['image3.gif']],
+
+Add more inline images specifying an alternative ID:
+
+ image => [
+  ['/path/to/image1.png', 'logo'],
+  ['image2.gif', 'img'],
+  ['image3.jpg', 'picture'],
+ ],
+
+or you can add them using methods of the C<Mail::Builder::Simple> object. You can repeat it for more times:
+
+ $mail->image->add('image.png');
+ or
+ $mail->image->add('/path/to/image.png', 'logo');
+
+Only the .png, .jpg and .gif images can be attached as inline images.
+
+The ID of the image is used for displaying the image in the HTML part of the email message, using something like the following HTML element for the "logo" ID:
+
+ <img src="cid:logo" alt="logo">
+
+If you don't provide an ID, one is automaticly generated and it will be the lowercase of the file name of the images, without the extension.
+
+=head1 Using templates
+
+C<Mail::Builder::Simple> allows to create the text and HTML body of the email message or the attachments using templates.
+
+When the value of the parameters C<plaintext>, C<htmltext> and C<attachment> is an arrayref and the last element of that arrayref begins with ":", it means that this field is created using a template. The type of template is specified in that last element of the array.
+
+=head2 Types of templates
+
+C<Mail::Builder::Simple> uses other plugin modules like L<Mail::Builder::Simple::TT> and L<Mail::Builder::Simple::HTML::Template> for creating the content using L<Template|Template-Toolkit> or L<HTML::Template>.
+
+If you want to create the content using a templating system for which there isn't a plugin created yet, you can create that plugin. It is pretty simple.
+
+The templates that can be used for the moment are:
+
+ Scalar
+ TT
+ TT-scalar
+ HTML::Template
+ HTML::Template-scalar
+
+Here are a few examples for creating a message plain text body using templates:
+
+ # Create the plain text part of the email message using the TT template file "template.tt"
+ 
+ my $mail = Mail::Builder::Simple->new;
+ $mail->send(
+  from => 'me@myhost.com',
+  to => 'you@host.com',
+  subject => 'The subject',
+  plaintext => ['template.tt', ':TT'],
+  template_args => {
+   INCLUDE_PATH => '/path/to/templates',
+  },
+  template_vars => {
+   name => 'My Name',
+   age => 20,
+  },
+ );
+
+and the template file in /path/to/templates/template.tt could contain:
+
+ Hello [% name %],
+ My age is [% age %].
+
+ # Create the plain text part of the email message using a TT template from a scalar variable
+ 
+ my $template = <<EOF;
+ Hello [% name %],
+ My age is [% age %].
+ EOF
+
+ my $mail = Mail::Builder::Simple->new;
+ $mail->send(
+  from => 'me@myhost.com',
+  to => 'you@host.com',
+  subject => 'The subject',
+  plaintext => [$template, ':TT-scalar'],
+  template_vars => {
+   name => 'My Name',
+   age => 20,
+  },
+ );
+
+ # Create the plain text part of the email message using L<HTML::Template> from a template file:
+
+ plaintext => ['template.tmpl', ':HTML::Template'],
+
+ # Create the plain text part of the email message using L<HTML::Template> from a template from a scalar variable
+
+ plaintext => [$template_content, ':HTML::Template-scalar'],
+ 
+The HTML part of the email message can be created in exactly the same way.
+
+  # Add an attachment created from a template file using TT:
+  
+   attachment => ['template.tt', 'generated_file_name.html', 'text/html', ':TT'],
+   
+ # Add an attachment created from a TT template from a scalar variable:
+ 
+  attachment => [$template_content, 'generated_file_name.txt', 'text/plain', ':TT-scalar'],
+  
+ # Add an attachment created from a template file using L<HTML::Template>:
+ 
+  attachment => ['template.tmpl', 'generated_file_name.txt', 'text/plain', ':HTML::Template'],
+  
+  # Add an attachment created from a template from a scalar variable using L<HTML::Template>:
+  
+   attachment => [$template_content, 'generated_file_name.html', 'text/html', ':HTML::Template-scalar'],
+
+ # Add an attachment from a scalar variable, without using any templating system:
+ 
+  attachment => [$file_content, 'generated_file_name.html', 'text/html', ':Scalar'],
+  
+Using the ":Scalar" as the last element of the arrayref makes it possible to create any type of file on the fly and add it as attachment to an email message. You can also add any type of file using templates, if the templating system used can create the type of file you want to add.
+
+=head2 Advanced use of templates
+
+If an email message should be created using more than a single templating system, all the templates can share the arguments from the C<template_args> hashref. For example if both L<Template|Template-Toolkit> and L<HTML::Template> are used and we want to specify the path to the directory with templates, the C<template_args> parameter could include:
+
+ template_args => {
+  INCLUDE_PATH => '/path/to/TT/templates',
+    path => '/path/to/HTML-Template/templates',
+     },
+     
+     This is possible because the arguments used by these 2 templating systems are in this case different (C<path> and C<INCLUDE_PATH>). But if 2 templating systems that need to use the same argument are used and if that parameter should have a different value for each one, than it won't be possible to share all the parameters from C<template_args>.
+     
+     In that case, we could add a new element in the arrayref by specifying the C<template_args> hashref separately for each template:
+     
+ plaintext => ['template.tt', {INCLUDE_PATH => '/path/to/TT/templates'}, ':TT'],
+ htmltext => ['template.tmpl', {path => '/path/to/HT/templates'}, ':HTML::Template'],
+ attachment => ['template.tt', 'file.html', 'text/html', {INCLUDE_PATH => '/another/dir'}, ':TT'],
+   
+As you have seen, the C<template_args> hashref for each template is added as a penultimate element of the arrayref and it can contain the same elements as the main C<template_args> parameter.
+
+The variables from the C<template_args> hashref overwrite the variables defined in the main C<template_args> hashref if it is used.
+
+If more templates are used for creating an email message, possibly using more templating systems, all of the templates get the variables specified in the C<template_vars> hashref.
+
+However, if 2 or more templates use a value with the same name, but that variable should have different values in different templates, you can also add a C<template_vars> hashref for each template, and overwrite the variables specified in the main C<template_vars> hashref.
+
+This C<template_vars> hashref which is specified for each template is added in the arrayref before the C<template_args> hashref. If you need to add just a local C<template_vars> hashref but not a C<template_args> one, you need to use an empty hashref - {} in place of the C<template_args> hashref, like:
+
+ plaintext => [
+  'template.tt',
+  {name => 'Your Name', age => 20},
+  {INCLUDE_PATH => '/path/to/TT/templates'},
+  ':TT'
+ ],
+
+ htmltext => [
+  'template.tmpl',
+  {name => 'Another name', address => '...'},
+  {},
+  ':HTML::Template'
+ ],
+
+ attachment => [
+  'template.tt',
+  'file.html',
+  'text/html',
+  {name => 'Something Else'},
+  {INCLUDE_PATH => '/another/dir'},
+  ':TT'
+ ],
+
+=head1 Using the module
+
+After using the C<send()> function, the C<To:>, C<CC:> and C<BCC:> fields are cleared from the Mail::Builder::Simple object, so you can use the same object to send the same email to other recipients.
+
+Here is an example:
+
+ my $mail = Mail::Builder::Simple->new(from => 'me@myhost.com');
+
+ $mail->send(
+  to => 'you@host.com',
+  subject => 'The subject',
+  plaintext => 'The body of the message',
+ );
+
+ $mail->send(to => 'he@host2.com');
+ $mail->send(to => 'she@host3.com');
+
+The last 2 lines sent the message previously created. If you want to create an entirely new message, you should use the method C<new()> again.
+
+=head1 BUGS
+
+If you find some, please tell me.
+
+=head1 SEE ALSO
+
+L<Mail::Builder>, L<Email::Send>, L<Template>, L<HTML::Template>, L<Config::Any>
+
+=head1 AUTHOR
+
+Octavian Rasnita <orasnita@gmail.com>
+
+=head1 COPYRIGHT
+
+This program is free software; you can redistribute it and/or modify it under 
+the same terms as Perl itself.
+
+=cut
