@@ -5,6 +5,8 @@ use Template;
 use Cwd;
 use Carp qw/croak/;
 
+our $VERSION = '0.02';
+
 sub new {
 my ($class, $args, $vars) = @_;
 

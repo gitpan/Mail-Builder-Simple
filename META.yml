@@ -18,9 +18,16 @@ no_index:
     - inc
     - t
 requires:
+  Carp: 0
+  Class::Accessor::Fast: 0
+  Config::Any: 0
+  Cwd: 0
   Email::Send: 2.192
+  Encode: 0
+  HTML::Template: 0
   Mail::Builder: 1.12
+  Template: 0
   perl: 5.8.0
 resources:
   license: http://dev.perl.org/licenses/
-version: 0.01
+version: 0.02

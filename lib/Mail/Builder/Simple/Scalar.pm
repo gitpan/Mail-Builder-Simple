@@ -3,6 +3,8 @@ package Mail::Builder::Simple::Scalar;
 use strict;
 use Carp qw/croak/;
 
+our $VERSION = '0.02';
+
 sub new {
 return bless {}, $_[0];
 }

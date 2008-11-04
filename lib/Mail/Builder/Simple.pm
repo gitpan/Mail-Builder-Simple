@@ -10,7 +10,7 @@ use Carp qw/confess/;
 use Config::Any;
 use base 'Mail::Builder';
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 __PACKAGE__->mk_accessors(qw/mail_client template_args template_vars/);
 

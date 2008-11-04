@@ -3,6 +3,8 @@ package Mail::Builder::Simple::HTML::Template;
 use strict;
 use HTML::Template;
 
+our $VERSION = '0.02';
+
 sub new {
 my ($class, $args, $vars) = @_;
 
