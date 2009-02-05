@@ -16,6 +16,9 @@ requires 'Config::Any' => '0';
 requires 'Cwd' => '0';
 requires 'Template' => '0';
 requires 'HTML::Template' => '0';
+requires 'Mail::Address' => '2.04';
+requires 'Email::MessageID' => '1.351';
+requires 'MIME::Tools' => '5.427';
 
 test_requires  'Test::More'  => '0.42';
 build_requires  'Test::Pod'             => 0;

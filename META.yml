@@ -22,12 +22,15 @@ requires:
   Class::Accessor::Fast: 0
   Config::Any: 0
   Cwd: 0
+  Email::MessageID: 1.351
   Email::Send: 2.192
   Encode: 0
   HTML::Template: 0
+  MIME::Tools: 5.427
+  Mail::Address: 2.04
   Mail::Builder: 1.12
   Template: 0
   perl: 5.8.0
 resources:
   license: http://dev.perl.org/licenses/
-version: 0.02
+version: 0.03

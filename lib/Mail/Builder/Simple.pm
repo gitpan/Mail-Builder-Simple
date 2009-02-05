@@ -1,5 +1,6 @@
 package Mail::Builder::Simple;
 
+require 5.008;
 use strict;
 use warnings;
 use Email::Send();
@@ -10,7 +11,7 @@ use Carp qw/confess/;
 use Config::Any;
 use base 'Mail::Builder';
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 __PACKAGE__->mk_accessors(qw/mail_client template_args template_vars/);
 
