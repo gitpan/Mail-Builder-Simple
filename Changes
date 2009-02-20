@@ -1,3 +1,11 @@
+0.04 - 2009-02-20
+
+If only htmltext parameter was used, but not plaintext, the plaintext parameter was automaticly created from the htmltext.
+
+But if only the htmltext parameter was used and it was created using a template, and not the real content of the HTML part, the plaintext content used to be created wrong.
+
+The version 0.04 solves this problem.
+
 0.03 - 2009-02-05
 
 Added a few modules as requirements.

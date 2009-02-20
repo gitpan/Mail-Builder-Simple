@@ -11,7 +11,7 @@ use Carp qw/confess/;
 use Config::Any;
 use base 'Mail::Builder';
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 __PACKAGE__->mk_accessors(qw/mail_client template_args template_vars/);
 
@@ -53,7 +53,7 @@ delete $args->{config_file};
 $self->add_args($conf->[0]->{$config_file});
 }
 
-foreach my $field(keys %$args) {
+foreach my $field(sort keys %$args) {
 next unless $field =~ /^(?:from|reply|organization|returnpath|sender|priority|subject|plaintext|htmltext|language|to|cc|bcc|attachment|image|mailer)$/;
 
 my $value = $args->{$field};
@@ -178,8 +178,16 @@ return $item;
 sub _set_or_add {
 my ($self, $field, @value) = @_;
 
-if ($field =~ /^(?:from|reply|organization|returnpath|sender|priority|subject|plaintext|htmltext|language|mailer)$/) {
+if ($field =~ /^(?:from|reply|organization|returnpath|sender|priority|subject|language|mailer)$/) {
 $self->$field(@value);
+}
+elsif ($field =~ /^(?:plaintext|htmltext)$/) {
+if (ref($value[0]) eq 'ARRAY') {
+$self->$field($value[0][0]);
+}
+else {
+$self->$field($value[0]);
+}
 }
 else {
 if ($self->$field) {
@@ -416,6 +424,47 @@ An example:
  },
 
 The variables from C<template_vars> will be used by all the templates which are used for creating the email message, unless some of them are overwritten as you will see.
+
+The variables from template_args and template_vars should be defined before using them in a template. So for example if you want to send a message to more addressees and want to send template_vars to the send() method, you also need to send the template's parameters to send() method, because if you define the template earlier, in the new() method, the template won't see the template_vars.
+
+Examples:
+
+Don't do something like this:
+
+  my $mail = Mail::Builder::Simple->new(
+    from => 'my@host.com',
+    subject => 'The subject',
+    htmltext => ['template.tt', ':TT'],
+  );
+          
+  $mail->send(
+    to => 'one@host.com',
+    template_vars => {name => 'Foo', age => 33},
+  );
+
+  $mail->send(
+    to => 'two@host2.com',
+    template_vars => {name => 'Bar', age => 28},
+  );
+
+But do it like this:
+
+  my $mail = Mail::Builder::Simple->new(
+    from => 'my@host.com',
+    subject => 'The subject',
+  );
+          
+  $mail->send(
+    to => 'one@host.com',
+    htmltext => ['template.tt', ':TT'],
+    template_vars => {name => 'Foo', age => 33},
+  );
+
+  $mail->send(
+    to => 'two@host2.com',
+    htmltext => ['template.tt', ':TT'],
+    template_vars => {name => 'Bar', age => 28},
+  );
 
 =head2 email message fields
 
