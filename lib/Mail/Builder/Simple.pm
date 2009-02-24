@@ -11,7 +11,7 @@ use Carp qw/confess/;
 use Config::Any;
 use base 'Mail::Builder';
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 __PACKAGE__->mk_accessors(qw/mail_client template_args template_vars/);
 
@@ -228,7 +228,7 @@ elsif (ref($mail_client->{mailer_args}) eq 'ARRAY') {
 }
 
 #print $entity->stringify;exit;
-Email::Send::send $mailer => $entity->stringify, @mailer_args;
+Email::Send::send $mailer => $entity->stringify, @mailer_args or confess($!);
 
 if ($mailer eq 'Test') {
 my @emails = Email::Send::Test->emails;
@@ -393,6 +393,10 @@ For example, for sending email with an SMTP host that require authentication, yo
   ],
  },
 
+If the SMTP server listens to a non-standard port (for example the port 28 instead of 25), you can specify that port after the address or IP of the SMTP server:
+
+ Host => 'smtp.host.com:28',
+    
 If the parameter C<mail_client> is not specified, the default mailer that is used is sendmail.
 
 =head2 template_args

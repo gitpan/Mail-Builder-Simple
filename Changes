@@ -1,3 +1,7 @@
+0.05 - 2009-02-24
+
+Added a few bytes to the POD documentation for showing how to use an SMTP server that listens to a non-standard port.
+
 0.04 - 2009-02-20
 
 If only htmltext parameter was used, but not plaintext, the plaintext parameter was automaticly created from the htmltext.
