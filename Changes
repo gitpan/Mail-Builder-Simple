@@ -1,6 +1,10 @@
-0.05 - 2009-02-24
+0.06 - 2009-02-24
 
 Added a few bytes to the POD documentation for showing how to use an SMTP server that listens to a non-standard port.
+
+0.05 - 2009-02-24
+
+Wrongly built
 
 0.04 - 2009-02-20
 
