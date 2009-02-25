@@ -19,6 +19,7 @@ requires 'HTML::Template' => '0';
 requires 'Mail::Address' => '2.04';
 requires 'Email::MessageID' => '1.351';
 requires 'MIME::Tools' => '5.427';
+requires 'Net::SMTP::SSL' => '0';
 
 test_requires  'Test::More'  => '0.42';
 build_requires  'Test::Pod'             => 0;

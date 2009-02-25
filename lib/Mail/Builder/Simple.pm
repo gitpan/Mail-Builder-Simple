@@ -11,7 +11,7 @@ use Carp qw/confess/;
 use Config::Any;
 use base 'Mail::Builder';
 
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
 __PACKAGE__->mk_accessors(qw/mail_client template_args template_vars/);
 
@@ -227,6 +227,11 @@ elsif (ref($mail_client->{mailer_args}) eq 'ARRAY') {
 @mailer_args = @{$mail_client->{mailer_args}};
 }
 
+my %mailer_args = @mailer_args;
+require Net::SMTP::SSL if $mailer_args{ssl};
+require Net::SMTP::TLS if $mailer_args{tls};
+
+
 #print $entity->stringify;exit;
 Email::Send::send $mailer => $entity->stringify, @mailer_args or confess($!);
 
@@ -384,7 +389,7 @@ C<mailer_args> receives all the configuration options that might be required by 
 
 For example, for sending email with an SMTP host that require authentication, you should use:
 
- mailer_args => {
+ mail_client => {
   mailer => 'SMTP',
   mailer_args => [
    Host => 'smtp.host.com',
@@ -396,7 +401,29 @@ For example, for sending email with an SMTP host that require authentication, yo
 If the SMTP server listens to a non-standard port (for example the port 28 instead of 25), you can specify that port after the address or IP of the SMTP server:
 
  Host => 'smtp.host.com:28',
-    
+
+If you want to send email using an SMTP server that uses SSL, for example send an email with Gmail, use:
+
+ mail_client => {
+  mailer => 'SMTP',
+  mailer_args => [
+   Host => 'smtp.gmail.com:465',
+   username => 'the_user',
+   password => 'the_password',
+   ssl => 1,
+  ],
+ },
+
+If you install Email::Send::Gmail, you can do this by using just:
+
+ mail_client => {
+  mailer => 'Gmail',
+  mailer_args => [
+   username => 'the_user',
+   password => 'the_password',
+  ],
+ },
+
 If the parameter C<mail_client> is not specified, the default mailer that is used is sendmail.
 
 =head2 template_args
