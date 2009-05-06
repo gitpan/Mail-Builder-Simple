@@ -1,3 +1,9 @@
+0.8 - 2009-05-06
+
+Net::SMTP::SSL put out from the list of required modules. It can be installed only if required by some programs.
+
+Changed confess with cluck.
+
 0.06 - 2009-02-24
 
 Added a few bytes to the POD documentation for showing how to use an SMTP server that listens to a non-standard port.

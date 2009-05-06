@@ -7,17 +7,17 @@ use Email::Send();
 use Mail::Builder;
 use Class::Accessor::Fast;
 use Encode;
-use Carp qw/confess/;
+use Carp qw/cluck/;
 use Config::Any;
 use base 'Mail::Builder';
 
-our $VERSION = '0.07';
+our $VERSION = '0.08';
 
 __PACKAGE__->mk_accessors(qw/mail_client template_args template_vars/);
 
 sub new {
 my $class = shift;
-my $args = ref($_[0]) eq 'HASH' ? $_[0] : {@_} or confess "Invalid hash";
+my $args = ref($_[0]) eq 'HASH' ? $_[0] : {@_} or cluck "Can't create mail object. Invalid parameters hash";
 
 my $self = $class->SUPER::new();
 bless $self, $class;
@@ -35,7 +35,7 @@ return bless $self, $class;
 
 sub add_args {
 my $self = shift;
-my $args = ref($_[0]) eq 'HASH' ? $_[0] : {@_} or confess "Invalid hash";
+my $args = ref($_[0]) eq 'HASH' ? $_[0] : {@_} or cluck "Can't add parameters. Invalid hash";
 
 $self->mail_client($args->{mail_client}) if $args->{mail_client};
 $self->template_args($args->{template_args}) if $args->{template_args};
@@ -74,7 +74,7 @@ elsif ($value->[0] and !ref($value->[0])) {
 $self->_process_item($args, $field, $value);
 }
 else {
-confess "The items inside the arrayref should be defined scalars or arrayrefs.";
+cluck "Can't add parameters. The items inside the arrayref should be defined scalars or arrayrefs.";
 }
 }
 elsif ($value and !ref($value)) {
@@ -82,7 +82,7 @@ elsif ($value and !ref($value)) {
 $self->_set_or_add($field, $value);
 }
 else {
-confess "The value for $field should be a defined scalar or an arrayref";
+cluck "Can't add parameters. The value for $field should be a defined scalar or an arrayref";
 }
 }
 }
@@ -115,7 +115,7 @@ elsif(!ref($item)) {
 $self->_set_or_add($field, $item);
 }
 else {
-confess "The elements of the array of array could be just scalars.";
+cluck "The elements of the array could be just scalars.";
 }
 }
 
@@ -201,7 +201,7 @@ $self->$field(@value);
 
 sub send {
 my $self = shift;
-my $args = ref($_[0]) eq 'HASH' ? $_[0] : {@_} or confess "Invalid hash";
+my $args = ref($_[0]) eq 'HASH' ? $_[0] : {@_} or cluck "Can't send mail. Invalid parameters hash";
 
 #Add message fields:
 $self->add_args($args) if $args;
@@ -233,7 +233,7 @@ require Net::SMTP::TLS if $mailer_args{tls};
 
 
 #print $entity->stringify;exit;
-Email::Send::send $mailer => $entity->stringify, @mailer_args or confess($!);
+Email::Send::send $mailer => $entity->stringify, @mailer_args or cluck($!);
 
 if ($mailer eq 'Test') {
 my @emails = Email::Send::Test->emails;
