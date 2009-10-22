@@ -1,22 +1,17 @@
 use inc::Module::Install;
 
-# Define metadata
 name 'Mail-Builder-Simple';
 all_from 'lib/Mail/Builder/Simple.pm';
 
 perl_version    '5.008';
 
-# Specific dependencies
 requires 'Mail::Builder' => '1.12';
-requires 'Email::Send' => '2.192';
-requires 'Class::Accessor::Fast' => '0';
-requires 'Encode' => '0';
-requires 'Carp' => '0';
-requires 'Config::Any' => '0';
-requires 'Config::General' => '0';
-requires 'Cwd' => '0';
-requires 'Template' => '0';
-requires 'HTML::Template' => '0';
+requires 'Email::Sender' => '0.092840';
+requires 'Email::Valid';
+requires 'Config::Any';
+requires 'Config::General';
+
+#Needs at least the following versions of these modules:
 requires 'Mail::Address' => '2.04';
 requires 'Email::MessageID' => '1.351';
 requires 'MIME::Tools' => '5.427';

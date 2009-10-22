@@ -1,19 +1,16 @@
 package Mail::Builder::Simple;
 
-require 5.008;
 use strict;
 use warnings;
-use Email::Send();
 use Mail::Builder;
-use Class::Accessor::Fast;
+use Email::Sender::Simple;
+use Email::Valid;
 use Encode;
 use Carp qw/cluck/;
 use Config::Any;
-use base 'Mail::Builder';
+use parent 'Mail::Builder';
 
-our $VERSION = '0.08';
-
-__PACKAGE__->mk_accessors(qw/mail_client template_args template_vars/);
+our $VERSION = '0.10';
 
 sub new {
 my $class = shift;
@@ -24,12 +21,6 @@ bless $self, $class;
 
 $self->add_args($args);
 
-#If just testing
-if ($args->{mail_client}->{mailer} and $args->{mail_client}->{mailer} eq 'Test') {
-require Email::Send::Test;
-Email::Send::Test->clear;
-}
-
 return bless $self, $class;
 }
 
@@ -37,9 +28,9 @@ sub add_args {
 my $self = shift;
 my $args = ref($_[0]) eq 'HASH' ? $_[0] : {@_} or cluck "Can't add parameters. Invalid hash";
 
-$self->mail_client($args->{mail_client}) if $args->{mail_client};
-$self->template_args($args->{template_args}) if $args->{template_args};
-$self->template_vars($args->{template_vars}) if $args->{template_vars};
+$self->{mail_client} = $args->{mail_client} if $args->{mail_client};
+$self->{template_args} = $args->{template_args} if $args->{template_args};
+$self->{template_vars} = $args->{template_vars} if $args->{template_vars};
 
 if (my $config_file = $args->{config_file}) {
 my $conf = Config::Any->load_files({
@@ -128,7 +119,7 @@ $source ||= 'file';
 delete $item->[-1];
 
 #Get and overwrite template_args
-my $template_args = $self->template_args;
+my $template_args = $self->{template_args};
 if ($args->{template_args}) {
 foreach (keys %{$args->{template_args}}) {
 $template_args->{$_} = $args->{template_args}->{$_};
@@ -145,7 +136,7 @@ $template_args->{$_} = $template_settings->{$_};
 }
 
 #Get and overwrite template_vars
-my $template_vars = $self->template_vars;
+my $template_vars = $self->{template_vars};
 if ($args->{template_vars}) {
 foreach (keys %{$args->{template_vars}}) {
 $template_vars->{$_} = $args->{template_vars}->{$_};
@@ -177,6 +168,11 @@ return $item;
 
 sub _set_or_add {
 my ($self, $field, @value) = @_;
+
+#Check if the email addresses are valid
+if ($field eq 'from' or $field eq 'to' or $field eq 'cc' or $field eq 'bcc' or $field eq 'reply' or $field eq 'returnpath') {
+die "The address $value[0] is not valid." unless Email::Valid->address($value[0]);
+}
 
 if ($field =~ /^(?:from|reply|organization|returnpath|sender|priority|subject|language|mailer)$/) {
 $self->$field(@value);
@@ -215,45 +211,57 @@ next if $field =~ /^(?:from|reply|organization|returnpath|sender|priority|subjec
 $entity->head->replace($field, Encode::encode('MIME-Header', $args->{$field}));
 }
 
-my $mail_client = $self->mail_client;
+my $mail_client = delete $self->{mail_client};
 my $mailer = $mail_client->{mailer};
 $mailer = 'Sendmail' unless $mailer;
 
-my @mailer_args = ();
+if ($mailer !~ /^Email::Sender::Transport/) {
+$mailer = 'Email::Sender::Transport::' . $mailer;
+}
+
+eval "require $mailer" or die $@;
+
+my %mailer_args = ();
 if (ref($mail_client->{mailer_args}) eq 'HASH') {
-@mailer_args = %{$mail_client->{mailer_args}};
+%mailer_args = %{$mail_client->{mailer_args}};
 }
 elsif (ref($mail_client->{mailer_args}) eq 'ARRAY') {
-@mailer_args = @{$mail_client->{mailer_args}};
+%mailer_args = @{$mail_client->{mailer_args}};
 }
 
-my %mailer_args = @mailer_args;
-require Net::SMTP::SSL if $mailer_args{ssl};
-require Net::SMTP::TLS if $mailer_args{tls};
+#Accept the old keys for compatibility with older versions:
+$mailer_args{host} = delete $mailer_args{Host} if $mailer_args{Host};
+$mailer_args{sasl_username} = delete $mailer_args{username} if $mailer_args{username};
+$mailer_args{sasl_password} = delete $mailer_args{password} if $mailer_args{password};
 
+#Add the port if it was provided as host:port
+if ($mailer_args{host} =~ /:(\d+)$/) {
+my $port = $1;
+$mailer_args{host} =~ s/:\d+$//;
+$mailer_args{port} = $port;
+}
 
-#print $entity->stringify;exit;
-Email::Send::send $mailer => $entity->stringify, @mailer_args or cluck($!);
+#If the mailer_args contains other addresses to send the email to than the ones from the email:
+my %different_addresses;
+$different_addresses{to} = delete $mailer_args{to} if $mailer_args{to};
+$different_addresses{from} = delete $mailer_args{from} if $mailer_args{from};
 
-if ($mailer eq 'Test') {
-my @emails = Email::Send::Test->emails;
-$self->{successfully_sent} = \@emails;
+#For sending with send() or try_to_send()
+my $live_on_error = delete $mail_client->{live_on_error} if $mail_client->{live_on_error};
+
+my $transport = $mailer->new(%mailer_args);
+
+if ($live_on_error) {
+Email::Sender::Simple->try_to_send($entity->stringify, {transport => $transport, %different_addresses});
+}
+else {
+Email::Sender::Simple->send($entity->stringify, {transport => $transport, %different_addresses});
 }
 
 #Reset To, Cc and BcC:
 $self->to->reset;
 $self->cc->reset;
 $self->bcc->reset;
-}
-
-sub emails_number {
-my $self = shift;
-return scalar @{$self->{successfully_sent}};
-}
-
-sub emails {
-my $self = shift;
-return @{$self->{successfully_sent}} ;
 }
 
 1;
@@ -284,7 +292,7 @@ Mail::Builder::Simple - Send UTF-8 HTML and text email with attachments and inli
  $mail->send(
   mail_client => {
    mailer => 'SMTP',
-   mailer_args => [Host => 'smtp.host.com'],
+   mailer_args => {host => 'smtp.host.com'},
   },
   from => 'me@host.com',
   to => 'you@yourhost.com',
@@ -308,9 +316,11 @@ Mail::Builder::Simple - Send UTF-8 HTML and text email with attachments and inli
   mailer => 'My Mailer 0.01',
  );
 
+Warning! The previous version of this module was using C<Email::Send> for sending mail but because of the issues of Email::Send, this version uses C<Email::Sender::Simple> and because of this change there may appear incompatibilities (although at least for the programs which are using Sendmail and SMTP mailers there shouldn't be any issues). Look for "Compatibility" below.
+
 =head1 DESCRIPTION
 
-C<Mail::Builder::Simple> can create email messages with L<Mail::Builder> and send them with L<Email::Send>. It has the following features:
+C<Mail::Builder::Simple> can create email messages with L<Mail::Builder> and send them with L<Email::Sender::Simple>. It has the following features:
 
 =over
 
@@ -338,9 +348,7 @@ For using another templating system, you can create a module like these 2 module
 
 =item mail sender
 
-C<Mail::Builder::Simple> can send the email messages using any of the mailers allowed by L<Email::Send> and some of them are: Sendmail, Qmail, SMTP, Gmail, NNTP.
-
-Some of these mailers might not be offered by the L<Email::Send> main distribution, and you might need to install separate modules from CPAN (Such an example is L<Email::Send::Gmail>.)
+C<Mail::Builder::Simple> can send the email messages using any of the mailers allowed by L<Email::Sender::Simple> and some of them are: Sendmail, SMTP, SMTP::Persistent, Maildir, Mbox.
 
 =item configuration file
 
@@ -366,7 +374,7 @@ This function sends the email. After sending the email, it cleans the C<To:>, C<
 
 =back
 
-These 2 functions can receive a hash with parameters which have the keys explained below.
+These 2 functions can receive a hash with parameters that have the keys explained below.
 
 =head1 Parameters
 
@@ -374,53 +382,41 @@ These 2 functions can receive a hash with parameters which have the keys explain
 
 This parameter is optional.
 
-It is a hashref with all the options needed to configure L<Email::Send> for sending the email messages.
+It is a hashref with all the options needed to configure L<Email::Sender::Simple> for sending the email messages.
 
 It looks like:
 
  mail_client => {
   mailer => 'SMTP',
-  mailer_args => [Host => 'smtp.host.com'],
+  mailer_args => {host => 'smtp.host.com'},
  },
 
-where the mailer can be 'SMTP', 'Sendmail', 'Qmail', 'Gmail', 'NNTP', or other types supported by Email::Send.
+where the mailer is the C<Email::Sender::Transport::> type of transporter you want to use, like 'SMTP', 'SMTP::Persistent', 'Sendmail', 'Maildir', 'Mbox', or other types supported by Email::Sender::Simple.
 
 C<mailer_args> receives all the configuration options that might be required by the specified mailer.
 
-For example, for sending email with an SMTP host that require authentication, you should use:
+For example, for sending email with an SMTP host that require authentication, and listens to a non-standard port, you should use:
 
  mail_client => {
   mailer => 'SMTP',
-  mailer_args => [
-   Host => 'smtp.host.com',
+  mailer_args => {
+   host => 'smtp.host.com',
+   port => 28,
    username => 'the_user',
    password => 'the_password',
-  ],
+  },
  },
-
-If the SMTP server listens to a non-standard port (for example the port 28 instead of 25), you can specify that port after the address or IP of the SMTP server:
-
- Host => 'smtp.host.com:28',
 
 If you want to send email using an SMTP server that uses SSL, for example send an email with Gmail, use:
 
  mail_client => {
   mailer => 'SMTP',
-  mailer_args => [
-   Host => 'smtp.gmail.com:465',
+  mailer_args => {
+   host => 'smtp.gmail.com',
+   #port => 465, #The port 465 is the default when using SSL, so it is not necessary.
    username => 'the_user',
    password => 'the_password',
    ssl => 1,
-  ],
- },
-
-If you install Email::Send::Gmail, you can do this by using just:
-
- mail_client => {
-  mailer => 'Gmail',
-  mailer_args => [
-   username => 'the_user',
-   password => 'the_password',
   ],
  },
 
@@ -517,7 +513,7 @@ Here is an example of a configuration file that uses L<Config::General>:
  <mail_client>
   mailer SMTP
   <mailer_args>
-   Host smtp.host.com
+   host smtp.host.com
    username user
    password passwd
   </mailer_args>
@@ -864,13 +860,52 @@ Here is an example:
 
 The last 2 lines sent the message previously created. If you want to create an entirely new message, you should use the method C<new()> again.
 
+=head1 Compatibility
+
+Starting with the version 0.10, the module tries to keep the compatibility with the programs that were using previous versions of this module, because beginning with this version, the email messages will be sent using the module L<Email::Sender::Simple> and not L<Email::Send> like before.
+
+The possible incompatibilities could appear only in the way you use the C<mail_client> key. In the previous versions, you needed to use something like:
+
+  mail_client => {
+    mailer => 'SMTP',
+    mailer_args => [Host => 'smtp.host.com'],
+  },
+
+This was the promoted style, although it was also possible to use:
+
+  mail_client => {
+    mailer => 'SMTP',
+    mailer_args => {Host => 'smtp.host.com'},
+  },
+
+So you were also able to use a hashref instead of an arrayref for the mailer_args key.
+
+Now the promoted style is the one that uses a hashref, although it is also possible to use the arrayref style if you want, so from this point of view it shouldn't be any incompatibilities.
+
+As you might have seen, the SMTP host is now specified using the "host" key and not "Host" like in the previous versions. The "host" key is the one that should be used in the new programs, but the old "Host" key is also working.
+
+For specifying the username and password for accessing an SMTP server, the module L<Email::Sender::Simple> uses the keys C<sasl_username> and C<sasl_password> and you may also use them, but you can also use the keys C<username> and C<password> like until now, because they are more simple.
+
+If you wanted to access an SMTP server on a non-standard port in older versions, you needed to provide it in the form host:port. Now there is a key named "port" that you can use instead, like in the following example:
+
+  mail_client => {
+    mailer => 'SMTP',
+    mailer_args => {host => 'smtp.host.com', port => 28},
+  },
+
+But you can still use the notation host: port like before if you want, as in:
+
+  mailer_args => [Host => 'smtp.host.com:28'],
+
+If you found an untreated incompatibility, please tell me.
+
 =head1 BUGS
 
 If you find some, please tell me.
 
 =head1 SEE ALSO
 
-L<Mail::Builder>, L<Email::Send>, L<Template>, L<HTML::Template>, L<Config::Any>
+L<Mail::Builder>, L<Email::Sender::Simple>, L<Template>, L<HTML::Template>, L<Config::Any>
 
 =head1 AUTHOR
 
