@@ -10,7 +10,7 @@ use Carp qw/cluck/;
 use Config::Any;
 use parent 'Mail::Builder';
 
-our $VERSION = '0.10';
+our $VERSION = '0.11';
 
 sub new {
 my $class = shift;
@@ -211,7 +211,7 @@ next if $field =~ /^(?:from|reply|organization|returnpath|sender|priority|subjec
 $entity->head->replace($field, Encode::encode('MIME-Header', $args->{$field}));
 }
 
-my $mail_client = delete $self->{mail_client};
+my $mail_client = delete $self->{mail_client} if $self->{mail_client};
 my $mailer = $mail_client->{mailer};
 $mailer = 'Sendmail' unless $mailer;
 
@@ -235,7 +235,7 @@ $mailer_args{sasl_username} = delete $mailer_args{username} if $mailer_args{user
 $mailer_args{sasl_password} = delete $mailer_args{password} if $mailer_args{password};
 
 #Add the port if it was provided as host:port
-if ($mailer_args{host} =~ /:(\d+)$/) {
+if ($mailer_args{host} and $mailer_args{host} =~ /:(\d+)$/) {
 my $port = $1;
 $mailer_args{host} =~ s/:\d+$//;
 $mailer_args{port} = $port;
@@ -244,6 +244,7 @@ $mailer_args{port} = $port;
 #If the mailer_args contains other addresses to send the email to than the ones from the email:
 my %different_addresses;
 $different_addresses{to} = delete $mailer_args{to} if $mailer_args{to};
+$different_addresses{cc} = delete $mailer_args{cc} if $mailer_args{cc};
 $different_addresses{from} = delete $mailer_args{from} if $mailer_args{from};
 
 #For sending with send() or try_to_send()
@@ -421,6 +422,39 @@ If you want to send email using an SMTP server that uses SSL, for example send a
  },
 
 If the parameter C<mail_client> is not specified, the default mailer that is used is sendmail.
+
+Starting with the version 0.10, the key C<mail_client> supports a new sub-key named C<live_on_error>. By default, if the email message can't be sent for different reasons, the module dies. If you set the key C<live_on_error> to true, the module doesn't die, but continues to run. This might be helpful if you try to send more email messages and if you are not interested if certain messages can't be sent.
+
+You can use:
+
+  mail_client => {
+    mailer => 'SMTP',
+    mailer_args => {host => 'smtp.host.com'},
+    live_on_error => 1,
+  },
+
+The mailer_args key could have any other sub-keys, depending on the type of transport used. For example, the SMTP type of transport could have host, username, password, ssl and others. For more information look in the L<Email::Sender::Transport::SMTP> or other module which is used.
+
+The mailer_args key could also contain the C<to>, C<cc> and C<from> keys, which are used if you want to send the email message to addresses specified by them, and not to the addresses specified when creating the email message.
+
+In the following example, the email message is sent to good-email@host.com and not to fake-email@host.com:
+
+  my $mail = Mail::Builder::Simple->new(
+    mail_client => {
+      mailer => 'SMTP',
+      mailer_args => {
+        host => 'smtp.host.com',
+        to => 'good-email@host.com',
+      },
+    },
+  );
+
+  $mail->send(
+    to => 'fake-email@host.com',
+    from => 'me@host.com',
+    subject => 'The subject',
+    htmltext => '<h1>Hello</h1><p>The body of the message...</p>',
+  );
 
 =head2 template_args
 
@@ -896,6 +930,8 @@ If you wanted to access an SMTP server on a non-standard port in older versions,
 But you can still use the notation host: port like before if you want, as in:
 
   mailer_args => [Host => 'smtp.host.com:28'],
+
+Some of the mailers that could be used with the older versions of this module like L<Email::Send::Gmail> can't be used anymore but most of the features offered by them are also offered by similar C<Email::Sender::Transport::> modules.
 
 If you found an untreated incompatibility, please tell me.
 
