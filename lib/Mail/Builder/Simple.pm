@@ -8,9 +8,9 @@ use Email::Valid;
 use Encode;
 use Carp qw/cluck/;
 use Config::Any;
-use parent 'Mail::Builder';
+use base 'Mail::Builder';
 
-our $VERSION = '0.11';
+our $VERSION = '0.12';
 
 sub new {
 my $class = shift;
