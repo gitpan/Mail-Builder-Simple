@@ -10,7 +10,7 @@ use Carp qw/cluck/;
 use Config::Any;
 use base 'Mail::Builder';
 
-our $VERSION = '0.13';
+our $VERSION = '0.14';
 
 sub new {
 my $class = shift;
@@ -248,7 +248,7 @@ $different_addresses{cc} = delete $mailer_args{cc} if $mailer_args{cc};
 $different_addresses{from} = delete $mailer_args{from} if $mailer_args{from};
 
 #For sending with send() or try_to_send()
-my $live_on_error = delete $mail_client->{live_on_error} if $mail_client->{live_on_error};
+my $live_on_error = $mail_client->{live_on_error} if $mail_client->{live_on_error};
 
 my $transport = $mailer->new(%mailer_args);
 
