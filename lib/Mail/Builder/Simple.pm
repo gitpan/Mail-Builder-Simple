@@ -10,7 +10,7 @@ use Carp qw/cluck/;
 use Config::Any;
 use base 'Mail::Builder';
 
-our $VERSION = '0.12';
+our $VERSION = '0.13';
 
 sub new {
 my $class = shift;
@@ -211,8 +211,8 @@ next if $field =~ /^(?:from|reply|organization|returnpath|sender|priority|subjec
 $entity->head->replace($field, Encode::encode('MIME-Header', $args->{$field}));
 }
 
-my $mail_client = delete $self->{mail_client} if $self->{mail_client};
-my $mailer = $mail_client->{mailer};
+my $mail_client = $self->{mail_client} if $self->{mail_client};
+my $mailer = $mail_client->{mailer} if $mail_client;
 $mailer = 'Sendmail' unless $mailer;
 
 if ($mailer !~ /^Email::Sender::Transport/) {
