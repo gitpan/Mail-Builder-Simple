@@ -1,23 +1,66 @@
-use inc::Module::Install;
 
-name 'Mail-Builder-Simple';
-all_from 'lib/Mail/Builder/Simple.pm';
+use strict;
+use warnings;
 
-perl_version    '5.008';
+BEGIN { require 5.008_008; }
 
-requires 'Mail::Builder' => '1.12';
-requires 'Email::Sender' => '0.092840';
-requires 'Email::Valid';
-requires 'Config::Any';
-requires 'Config::General';
+use ExtUtils::MakeMaker 6.31;
 
-#Needs at least the following versions of these modules:
-requires 'Mail::Address' => '2.04';
-requires 'Email::MessageID' => '1.351';
-requires 'MIME::Tools' => '5.427';
 
-test_requires  'Test::More'  => '0.42';
-build_requires  'Test::Pod'             => 0;
-build_requires  'Test::Pod::Coverage'   => 0;
 
-WriteAll;
+my %WriteMakefileArgs = (
+  'ABSTRACT' => 'Send UTF-8 HTML and text email with attachments and inline images, eventually using templates',
+  'AUTHOR' => 'Octavian Rasnita <orasnita@gmail.com>',
+  'BUILD_REQUIRES' => {
+    'FindBin' => '0',
+    'Test::More' => '0',
+    'Test::Pod' => '0',
+    'utf8' => '0'
+  },
+  'CONFIGURE_REQUIRES' => {
+    'ExtUtils::MakeMaker' => '6.31'
+  },
+  'DISTNAME' => 'Mail-Builder-Simple',
+  'EXE_FILES' => [],
+  'LICENSE' => 'perl',
+  'NAME' => 'Mail::Builder::Simple',
+  'PREREQ_PM' => {
+    'Carp' => '0',
+    'Config::Any' => '0',
+    'Cwd' => '0',
+    'Email::Sender::Simple' => '0',
+    'Email::Valid' => '0',
+    'Encode' => '0',
+    'Exception::Died' => '0',
+    'HTML::Template' => '0',
+    'Mail::Builder' => '0',
+    'Module::Load' => '0',
+    'Template' => '0'
+  },
+  'VERSION' => '0.15',
+  'test' => {
+    'TESTS' => 't/*.t'
+  }
+);
+
+
+unless ( eval { ExtUtils::MakeMaker->VERSION(6.56) } ) {
+  my $br = delete $WriteMakefileArgs{BUILD_REQUIRES};
+  my $pp = $WriteMakefileArgs{PREREQ_PM};
+  for my $mod ( keys %$br ) {
+    if ( exists $pp->{$mod} ) {
+      $pp->{$mod} = $br->{$mod} if $br->{$mod} > $pp->{$mod};
+    }
+    else {
+      $pp->{$mod} = $br->{$mod};
+    }
+  }
+}
+
+delete $WriteMakefileArgs{CONFIGURE_REQUIRES}
+  unless eval { ExtUtils::MakeMaker->VERSION(6.52) };
+
+WriteMakefile(%WriteMakefileArgs);
+
+
+

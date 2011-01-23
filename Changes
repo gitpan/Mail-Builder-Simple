@@ -1,4 +1,8 @@
 
+0.15 - January 2011
+
+Refactored some methods and tidy up the code for making it perlcritic - friendly.
+
 0.13 - December 7th, 2009
 
 Made a correction in Simple.pm and now it can send again emails to multiple addresses one by one.

@@ -8,261 +8,408 @@ use Email::Valid;
 use Encode;
 use Carp qw/cluck/;
 use Config::Any;
+use Module::Load;
 use base 'Mail::Builder';
 
-our $VERSION = '0.14';
+use 5.008_008;
+
+our $VERSION = '0.15';
 
 sub new {
-my $class = shift;
-my $args = ref($_[0]) eq 'HASH' ? $_[0] : {@_} or cluck "Can't create mail object. Invalid parameters hash";
+    my @params = @_;
+    my $class  = shift @params;
+    my $args   = ref( $params[0] ) eq 'HASH' ? $params[0] : {@params}
+      or cluck 'Can\'t create mail object. Invalid parameters hash';
 
-my $self = $class->SUPER::new();
-bless $self, $class;
+    my $self = $class->SUPER::new();
+    bless $self, $class;
 
-$self->add_args($args);
+    my @fields = qw/from reply organization returnpath sender priority
+      subject plaintext htmltext language to cc bcc attachment image mailer/;
 
-return bless $self, $class;
+    $self->{mail_fields} = join q{|}, @fields;
+
+    $self->_add_args($args);
+
+    return bless $self, $class;
 }
 
-sub add_args {
-my $self = shift;
-my $args = ref($_[0]) eq 'HASH' ? $_[0] : {@_} or cluck "Can't add parameters. Invalid hash";
+sub _add_args {
+    my @params = @_;
+    my $self   = shift @params;
+    my $args   = ref( $params[0] ) eq 'HASH' ? $params[0] : {@params}
+      or return;
 
-$self->{mail_client} = $args->{mail_client} if $args->{mail_client};
-$self->{template_args} = $args->{template_args} if $args->{template_args};
-$self->{template_vars} = $args->{template_vars} if $args->{template_vars};
+    if ( $args->{mail_client} ) {
+        $self->{mail_client} = $args->{mail_client};
+    }
 
-if (my $config_file = $args->{config_file}) {
-my $conf = Config::Any->load_files({
-files => [$config_file],
-use_ext => 1,
-driver_args => {General => {-UTF8 => 1}},
-});
+    if ( $args->{template_args} ) {
+        $self->{template_args} = $args->{template_args};
+    }
 
-delete $args->{config_file};
+    if ( $args->{template_vars} ) {
+        $self->{template_vars} = $args->{template_vars};
+    }
 
-$self->add_args($conf->[0]->{$config_file});
+    if ( my $config_file = $args->{config_file} ) {
+        my $conf = Config::Any->load_files(
+            {
+                files       => [$config_file],
+                use_ext     => 1,
+                driver_args => { General => { -UTF8 => 1 } },
+            }
+        );
+
+        delete $args->{config_file};
+
+        $self->_add_args( $conf->[0]->{$config_file} );
+    }
+
+    foreach my $field ( sort keys %{$args} ) {
+        $self->_add_arg( $args, $field );
+    }
+
+    return 1;
 }
 
-foreach my $field(sort keys %$args) {
-next unless $field =~ /^(?:from|reply|organization|returnpath|sender|priority|subject|plaintext|htmltext|language|to|cc|bcc|attachment|image|mailer)$/;
+sub _add_arg {
+    my ( $self, $args, $field ) = @_;
 
-my $value = $args->{$field};
+    return if $field !~ /^(?:$self->{mail_fields})$/smox;
 
-if ($value and ref($value) eq 'ARRAY') {
-#If the value is an arrayref
-if ($value->[0] and $value->[0] eq 'MORE') {
-#There are more items
-shift @$value;
-$self->_process_array($args, $field, $value);
-}
-elsif ($value->[0] and ref($value->[0]) eq 'ARRAY') {
-#There are more items
-$self->_process_array($args, $field, $value);
-}
-elsif ($value->[0] and !ref($value->[0])) {
-#There is an item with one or more fields
-$self->_process_item($args, $field, $value);
-}
-else {
-cluck "Can't add parameters. The items inside the arrayref should be defined scalars or arrayrefs.";
-}
-}
-elsif ($value and !ref($value)) {
-#The value is a scalar
-$self->_set_or_add($field, $value);
-}
-else {
-cluck "Can't add parameters. The value for $field should be a defined scalar or an arrayref";
-}
-}
+    my $value = $args->{$field};
+
+    #If the value is an arrayref
+    if ( $value and ref($value) eq 'ARRAY' ) {
+
+        #There are more items
+        if ( $value->[0] and $value->[0] eq 'MORE' ) {
+            shift @{$value};
+            $self->_process_array( $args, $field, $value );
+        }
+
+        #There are more items
+        elsif ( $value->[0] and ref( $value->[0] ) eq 'ARRAY' ) {
+            $self->_process_array( $args, $field, $value );
+        }
+
+        #There is an item with one or more fields
+        elsif ( $value->[0] and not ref( $value->[0] ) ) {
+            $self->_process_item( $args, $field, $value );
+        }
+        else {
+            cluck 'Items inside arrayref should be scalar/arrayref.';
+        }
+    }
+
+    #The value is a scalar
+    elsif ( $value and not ref $value ) {
+        $self->_set_or_add( $field, $value );
+    }
+    else {
+        cluck "Value for $field should be scalar/an arrayref";
+    }
+
+    return 1;
 }
 
 sub _process_array {
-my ($self, $args, $field, $value) = @_;
+    my ( $self, $args, $field, $value ) = @_;
 
-foreach my $item(@$value) {
-$self->_process_item($args, $field, $item);
-}
+    foreach my $item ( @{$value} ) {
+        $self->_process_item( $args, $field, $item );
+    }
+
+    return 1;
 }
 
 sub _process_item {
-my ($self, $args, $field, $item) = @_;
+    my ( $self, $args, $field, $item ) = @_;
 
-if (ref($item) eq 'ARRAY') {
-#This item is an arrayref
-if ($item->[-1] =~ /^:(.+)/) {
-#This item is a template
-my $result = $self->_process_template($args, $item, $field);
-$self->_set_or_add($field, $result);
-}
-else {
-#It is not a template
-$self->_set_or_add($field, @$item);
-}
-}
-elsif(!ref($item)) {
-#It is a scalar
-$self->_set_or_add($field, $item);
-}
-else {
-cluck "The elements of the array could be just scalars.";
-}
+    #This item is an arrayref
+    if ( ref($item) eq 'ARRAY' ) {
+
+        #This item is a template
+        if ( $item->[-1] =~ /^:(.+)/smox ) {
+            my $result = $self->_process_template( $args, $item, $field );
+            $self->_set_or_add( $field, $result );
+        }
+
+        #It is not a template
+        else {
+            $self->_set_or_add( $field, @{$item} );
+        }
+    }
+
+    #It is a scalar
+    elsif ( !ref $item ) {
+        $self->_set_or_add( $field, $item );
+    }
+    else {
+        cluck 'The elements of the array can be just scalars.';
+    }
+
+    return 1;
 }
 
 sub _process_template {
-my ($self, $args, $item, $field) = @_;
+    my ( $self, $args, $item, $field ) = @_;
 
-my $type = substr($item->[-1], 1);
-($type, my $source) = split /-/, $type;
-$source ||= 'file';
-delete $item->[-1];
+    my $type = substr $item->[-1], 1;
+    ( $type, my $source ) = split /-/smx, $type;
+    $source ||= 'file';
+    delete $item->[-1];
 
-#Get and overwrite template_args
-my $template_args = $self->{template_args};
-if ($args->{template_args}) {
-foreach (keys %{$args->{template_args}}) {
-$template_args->{$_} = $args->{template_args}->{$_};
-}
-}
+    #Get and overwrite template_args
+    my $template_args = $self->{template_args};
+    if ( $args->{template_args} ) {
+        foreach ( keys %{ $args->{template_args} } ) {
+            $template_args->{$_} = $args->{template_args}->{$_};
+        }
+    }
 
-#If this template has its own settings:
-if (ref($item->[-1]) eq 'HASH') {
-my $template_settings = pop @$item;
-foreach(keys %$template_settings) {
-#Insert and overwrite the new template settings:
-$template_args->{$_} = $template_settings->{$_};
-}
-}
+    #If this template has its own settings:
+    if ( ref( $item->[-1] ) eq 'HASH' ) {
+        my $template_settings = pop @{$item};
+        foreach ( keys %{$template_settings} ) {
 
-#Get and overwrite template_vars
-my $template_vars = $self->{template_vars};
-if ($args->{template_vars}) {
-foreach (keys %{$args->{template_vars}}) {
-$template_vars->{$_} = $args->{template_vars}->{$_};
-}
-}
+            #Insert and overwrite the new template settings:
+            $template_args->{$_} = $template_settings->{$_};
+        }
+    }
 
-#If this template has its own variables:
-if (ref($item->[-1]) eq 'HASH') {
-my $template_variables = pop @$item;
-foreach(keys %$template_variables) {
-#Insert and overwrite the template vars:
-$template_vars->{$_} = $template_variables->{$_};
-}
-}
+    #Get and overwrite template_vars
+    my $template_vars = $self->{template_vars};
+    if ( $args->{template_vars} ) {
+        foreach ( keys %{ $args->{template_vars} } ) {
+            $template_vars->{$_} = $args->{template_vars}->{$_};
+        }
+    }
 
-eval "require Mail::Builder::Simple::$type";
+    #If this template has its own variables:
+    if ( ref( $item->[-1] ) eq 'HASH' ) {
+        my $template_variables = pop @{$item};
+        foreach ( keys %{$template_variables} ) {
 
-my $t = "Mail::Builder::Simple::$type"->new($template_args, $template_vars);
+            #Insert and overwrite the template vars:
+            $template_vars->{$_} = $template_variables->{$_};
+        }
+    }
 
-$item->[0] = $t->process($item->[0], $source);
+    load "Mail::Builder::Simple::$type";
 
-if ($field eq 'attachment') {
-return Mail::Builder::Attachment::Data->new(@$item);
-}
-else {
-return $item;
-}
+    my $t =
+      "Mail::Builder::Simple::$type"->new( $template_args, $template_vars );
+
+    $item->[0] = $t->process( $item->[0], $source );
+
+    if ( $field eq 'attachment' ) {
+        return Mail::Builder::Attachment::Data->new( @{$item} );
+    }
+    else {
+        return $item;
+    }
 }
 
 sub _set_or_add {
-my ($self, $field, @value) = @_;
+    my ( $self, $field, @value ) = @_;
 
-#Check if the email addresses are valid
-if ($field eq 'from' or $field eq 'to' or $field eq 'cc' or $field eq 'bcc' or $field eq 'reply' or $field eq 'returnpath') {
-die "The address $value[0] is not valid." unless Email::Valid->address($value[0]);
+    return if not $self->_check_email_valid( $field, @value );
+
+    if (   $field eq 'from'
+        or $field eq 'reply'
+        or $field eq 'organization'
+        or $field eq 'returnpath'
+        or $field eq 'sender'
+        or $field eq 'priority'
+        or $field eq 'subject'
+        or $field eq 'language'
+        or $field eq 'mailer' )
+    {
+        $self->$field(@value);
+    }
+    elsif ( $field eq 'plaintext' or $field eq 'htmltext' ) {
+        if ( ref( $value[0] ) eq 'ARRAY' ) {
+            $self->$field( $value[0][0] );
+        }
+        else {
+            $self->$field( $value[0] );
+        }
+    }
+    else {
+        if ( $self->$field ) {
+            $self->$field->add(@value);
+        }
+        else {
+            $self->$field(@value);
+        }
+    }
+
+    return 1;
 }
 
-if ($field =~ /^(?:from|reply|organization|returnpath|sender|priority|subject|language|mailer)$/) {
-$self->$field(@value);
-}
-elsif ($field =~ /^(?:plaintext|htmltext)$/) {
-if (ref($value[0]) eq 'ARRAY') {
-$self->$field($value[0][0]);
-}
-else {
-$self->$field($value[0]);
-}
-}
-else {
-if ($self->$field) {
-$self->$field->add(@value);
-}
-else {
-$self->$field(@value);
-}
-}
+sub _check_email_valid {
+    my ( $self, $field, @value ) = @_;
+
+    if (   $field eq 'from'
+        or $field eq 'to'
+        or $field eq 'cc'
+        or $field eq 'bcc'
+        or $field eq 'reply'
+        or $field eq 'returnpath' )
+    {
+        if ( !Email::Valid->address( $value[0] ) ) {
+            warn "Bad email address: $value[0]";
+            return;
+        }
+    }
+
+    return 1;
 }
 
-sub send {
-my $self = shift;
-my $args = ref($_[0]) eq 'HASH' ? $_[0] : {@_} or cluck "Can't send mail. Invalid parameters hash";
+sub sendmail {
+    my @params = @_;
+    my $self   = shift @params;
+    my $args   = ref( $params[0] ) eq 'HASH' ? $params[0] : {@params}
+      or cluck 'Can\'t send mail. Invalid parameters hash';
 
-#Add message fields:
-$self->add_args($args) if $args;
+    #Add message fields:
+    $self->_add_args($args);
 
-#Add custom headers if there are:
-my $entity = $self->build_message;
+    #Create the email message
+    my $entity = $self->build_message;
 
-foreach my $field(keys %$args) {
-next if $field =~ /^(?:from|reply|organization|returnpath|sender|priority|subject|plaintext|htmltext|language|to|cc|bcc|attachment|image|mailer|mail_client|template_args|template_vars)$/;
+    #Add custom headers if there are:
+    $self->_add_custom_headers( $entity, $args );
 
-$entity->head->replace($field, Encode::encode('MIME-Header', $args->{$field}));
+    my $mail_client = $self->{mail_client};
+
+    my $mailer = $self->_load_mailer($mail_client);
+
+    my $mailer_args = $self->_mailer_args($mail_client);
+
+    #Accept the old keys for compatibility with older versions:
+    $mailer_args = $self->_asure_compatibility($mailer_args);
+
+    #If the mailer_args contains other addresses to send the email to
+    #than the ones from the email:
+    my $different_addresses = $self->_different_email_addresses($mailer_args);
+
+    #For sending with send() or try_to_send()
+    my $transport = $mailer->new( %{$mailer_args} );
+
+    if ( $mail_client->{live_on_error} ) {
+        Email::Sender::Simple->try_to_send( $entity->stringify,
+            { transport => $transport, %{$different_addresses} } );
+    }
+    else {
+        Email::Sender::Simple->send( $entity->stringify,
+            { transport => $transport, %{$different_addresses} } );
+    }
+
+    #Reset To, Cc and BcC:
+    $self->to->reset;
+    $self->cc->reset;
+    $self->bcc->reset;
+
+    return 1;
 }
 
-my $mail_client = $self->{mail_client} if $self->{mail_client};
-my $mailer = $mail_client->{mailer} if $mail_client;
-$mailer = 'Sendmail' unless $mailer;
+*send = \&sendmail;
 
-if ($mailer !~ /^Email::Sender::Transport/) {
-$mailer = 'Email::Sender::Transport::' . $mailer;
+sub _add_custom_headers {
+    my ( $self, $entity, $args ) = @_;
+
+    foreach my $field ( keys %{$args} ) {
+        next if $field =~ /^(?:$self->{mail_fields})$/smox;
+
+        $entity->head->replace( $field,
+            Encode::encode( 'MIME-Header', $args->{$field} ) );
+    }
+
+    return 1;
 }
 
-eval "require $mailer" or die $@;
+sub _load_mailer {
+    my ( $self, $mail_client ) = @_;
 
-my %mailer_args = ();
-if (ref($mail_client->{mailer_args}) eq 'HASH') {
-%mailer_args = %{$mail_client->{mailer_args}};
-}
-elsif (ref($mail_client->{mailer_args}) eq 'ARRAY') {
-%mailer_args = @{$mail_client->{mailer_args}};
-}
+    my $mailer;
 
-#Accept the old keys for compatibility with older versions:
-$mailer_args{host} = delete $mailer_args{Host} if $mailer_args{Host};
-$mailer_args{sasl_username} = delete $mailer_args{username} if $mailer_args{username};
-$mailer_args{sasl_password} = delete $mailer_args{password} if $mailer_args{password};
+    if ($mail_client) {
+        $mailer = $mail_client->{mailer};
+    }
 
-#Add the port if it was provided as host:port
-if ($mailer_args{host} and $mailer_args{host} =~ /:(\d+)$/) {
-my $port = $1;
-$mailer_args{host} =~ s/:\d+$//;
-$mailer_args{port} = $port;
-}
+    if ( !$mailer ) {
+        $mailer = 'Sendmail';
+    }
 
-#If the mailer_args contains other addresses to send the email to than the ones from the email:
-my %different_addresses;
-$different_addresses{to} = delete $mailer_args{to} if $mailer_args{to};
-$different_addresses{cc} = delete $mailer_args{cc} if $mailer_args{cc};
-$different_addresses{from} = delete $mailer_args{from} if $mailer_args{from};
+    if ( $mailer !~ /^Email::Sender::Transport/smox ) {
+        $mailer = 'Email::Sender::Transport::' . $mailer;
+    }
 
-#For sending with send() or try_to_send()
-my $live_on_error = $mail_client->{live_on_error} if $mail_client->{live_on_error};
+    load $mailer;
 
-my $transport = $mailer->new(%mailer_args);
-
-if ($live_on_error) {
-Email::Sender::Simple->try_to_send($entity->stringify, {transport => $transport, %different_addresses});
-}
-else {
-Email::Sender::Simple->send($entity->stringify, {transport => $transport, %different_addresses});
+    return $mailer;
 }
 
-#Reset To, Cc and BcC:
-$self->to->reset;
-$self->cc->reset;
-$self->bcc->reset;
+sub _mailer_args {
+    my ( $self, $mail_client ) = @_;
+
+    my %mailer_args = ();
+    if ( ref( $mail_client->{mailer_args} ) eq 'HASH' ) {
+        %mailer_args = %{ $mail_client->{mailer_args} };
+    }
+    elsif ( ref( $mail_client->{mailer_args} ) eq 'ARRAY' ) {
+        %mailer_args = @{ $mail_client->{mailer_args} };
+    }
+
+    return \%mailer_args;
+}
+
+sub _asure_compatibility {
+    my ( $self, $mailer_args ) = @_;
+
+    if ( $mailer_args->{Host} ) {
+        $mailer_args->{host} = delete $mailer_args->{Host};
+    }
+
+    if ( $mailer_args->{username} ) {
+        $mailer_args->{sasl_username} = $mailer_args->{username};
+    }
+
+    if ( $mailer_args->{password} ) {
+        $mailer_args->{sasl_password} = $mailer_args->{password};
+    }
+
+    #Add the port if it was provided as host:port
+    if ( $mailer_args->{host} and $mailer_args->{host} =~ /:(\d+)$/smx ) {
+        my $port = $1;
+        $mailer_args->{host} =~ s/:\d+$//smx;
+        $mailer_args->{port} = $port;
+    }
+
+    return $mailer_args;
+}
+
+sub _different_email_addresses {
+    my ( $self, $mailer_args ) = @_;
+
+    my %different_addresses;
+
+    if ( $mailer_args->{to} ) {
+        $different_addresses{to} = delete $mailer_args->{to};
+    }
+
+    if ( $mailer_args->{cc} ) {
+        $different_addresses{cc} = delete $mailer_args->{cc};
+    }
+
+    if ( $mailer_args->{from} ) {
+        $different_addresses{from} = delete $mailer_args->{from};
+    }
+
+    return \%different_addresses;
 }
 
 1;
@@ -272,6 +419,10 @@ __END__
 =head1 NAME
 
 Mail::Builder::Simple - Send UTF-8 HTML and text email with attachments and inline images, eventually using templates
+
+=head1 VERSION
+
+Version 0.15
 
 =head1 SYNOPSIS
 
@@ -321,7 +472,7 @@ Warning! The previous version of this module was using C<Email::Send> for sendin
 
 =head1 DESCRIPTION
 
-C<Mail::Builder::Simple> can create email messages with L<Mail::Builder> and send them with L<Email::Sender::Simple>. It has the following features:
+C<Mail::Builder::Simple> can create email messages with L<Mail::Builder|Mail::Builder> and send them with L<Email::Sender::Simple|Email::Sender::Simple>. It has the following features:
 
 =over
 
@@ -343,13 +494,13 @@ C<Mail::Builder::Simple> can add inline images that will be displayed in the HTM
 
 The body and the attachments can be created using a template, either using external template files or templates from scalar variables.
 
-C<Mail::Builder::Simple> uses other modules like L<Mail::Builder::Simple::TT> and L<Mail::Builder::Simple::HTML::Template> in order to allow using L<Template|Template-Toolkit> or L<HTML::Template> templates.
+C<Mail::Builder::Simple> uses other modules like L<Mail::Builder::Simple::TT|Mail::Builder::Simple::TT> and L<Mail::Builder::Simple::HTML::Template|Mail::Builder::Simple::HTML::Template> in order to allow using L<Template-Toolkit|Template> or L<HTML::Template|HTML::Template> templates.
 
 For using another templating system, you can create a module like these 2 modules.
 
 =item mail sender
 
-C<Mail::Builder::Simple> can send the email messages using any of the mailers allowed by L<Email::Sender::Simple> and some of them are: Sendmail, SMTP, SMTP::Persistent, Maildir, Mbox.
+C<Mail::Builder::Simple> can send the email messages using any of the mailers allowed by L<Email::Sender::Simple|Email::Sender::Simple> and some of them are: Sendmail, SMTP, SMTP::Persistent, Maildir, Mbox.
 
 =item configuration file
 
@@ -359,15 +510,21 @@ For example, you could save the mailer type, the mailer host, username and passw
 
 =back
 
-=head1 Functions
+=head1 CONFIGURATION AND ENVIRONMENT
 
-Mail::Builder::Simple offers the following functions:
+The configuration file is specified using the C<config_file> key when the C<new()> constructor is called.
+
+It is explained below.
+
+=head1 SUBROUTINES/METHODS
+
+Mail::Builder::Simple offers the following methods:
 
 =over
 
 =item new()
 
-This is the constructor of the C<Mail::Builder::Simple> object. This object is a L<Mail::Builder> object also, so you can use the methods from Mail::Builder on it if you want.
+This is the constructor of the C<Mail::Builder::Simple> object. This object is a L<Mail::Builder|Mail::Builder> object also, so you can use the methods from Mail::Builder on it if you want.
 
 =item send()
 
@@ -383,7 +540,7 @@ These 2 functions can receive a hash with parameters that have the keys explaine
 
 This parameter is optional.
 
-It is a hashref with all the options needed to configure L<Email::Sender::Simple> for sending the email messages.
+It is a hashref with all the options needed to configure L<Email::Sender::Simple|Email::Sender::Simple> for sending the email messages.
 
 It looks like:
 
@@ -433,7 +590,7 @@ You can use:
     live_on_error => 1,
   },
 
-The mailer_args key could have any other sub-keys, depending on the type of transport used. For example, the SMTP type of transport could have host, username, password, ssl and others. For more information look in the L<Email::Sender::Transport::SMTP> or other module which is used.
+The mailer_args key could have any other sub-keys, depending on the type of transport used. For example, the SMTP type of transport could have host, username, password, ssl and others. For more information look in the L<Email::Sender::Transport::SMTP|Email::Sender::Transport::SMTP> or other module which is used.
 
 The mailer_args key could also contain the C<to>, C<cc> and C<from> keys, which are used if you want to send the email message to addresses specified by them, and not to the addresses specified when creating the email message.
 
@@ -539,9 +696,9 @@ This parameter is optional.
 
 It shows the path to a configuration file that holds some parameters you don't want to specify in each program.
 
-The configuration file can be any type of file supported by L<Config::Any>: Apache config style (Config::General), JSON, INI files, XML, YAML or perl code.
+The configuration file can be any type of file supported by L<Config::Any|Config::Any>: Apache config style (Config::General), JSON, INI files, XML, YAML or perl code.
 
-Here is an example of a configuration file that uses L<Config::General>:
+Here is an example of a configuration file that uses L<Config::General|Config::General>:
 (/home/user/email.conf)
 
  <mail_client>
@@ -574,7 +731,7 @@ As all other parameters shown until now, C<config_file> can be sent to both C<ne
 
 You might need to include in your message some headers which are not in the list shown above. You can also add them as separate parameters, but they need to be capitalised exactly how they should appear in the email message.
 
-These headers overwrite the previous set headers that have the same name and they can be sent as parameters only to the C<send()> method, not to the L<new()>.
+These headers overwrite the previous set headers that have the same name and they can be sent as parameters only to the L</send> method, not to the L</new>.
 
 Here is an example of including the header C<X-My-Special-Header>:
 
@@ -738,7 +895,7 @@ When the value of the parameters C<plaintext>, C<htmltext> and C<attachment> is 
 
 =head2 Types of templates
 
-C<Mail::Builder::Simple> uses other plugin modules like L<Mail::Builder::Simple::TT> and L<Mail::Builder::Simple::HTML::Template> for creating the content using L<Template|Template-Toolkit> or L<HTML::Template>.
+C<Mail::Builder::Simple> uses other plugin modules like L<Mail::Builder::Simple::TT|Mail::Builder::Simple::TT> and L<Mail::Builder::Simple::HTML::Template|Mail::Builder::Simple::HTML::Template> for creating the content using L<Template-Toolkit|Template> or L<HTML::Template|HTML::Template>.
 
 If you want to create the content using a templating system for which there isn't a plugin created yet, you can create that plugin. It is pretty simple.
 
@@ -793,11 +950,11 @@ and the template file in /path/to/templates/template.tt could contain:
   },
  );
 
- # Create the plain text part of the email message using L<HTML::Template> from a template file:
+ # Create the plain text part of the email message using L<HTML::Template|HTML::Template> from a template file:
 
  plaintext => ['template.tmpl', ':HTML::Template'],
 
- # Create the plain text part of the email message using L<HTML::Template> from a template from a scalar variable
+ # Create the plain text part of the email message using L<HTML::Template|HTML::Template> from a template from a scalar variable
 
  plaintext => [$template_content, ':HTML::Template-scalar'],
  
@@ -811,11 +968,11 @@ The HTML part of the email message can be created in exactly the same way.
  
   attachment => [$template_content, 'generated_file_name.txt', 'text/plain', ':TT-scalar'],
   
- # Add an attachment created from a template file using L<HTML::Template>:
+ # Add an attachment created from a template file using L<HTML::Template|HTML::Template>:
  
   attachment => ['template.tmpl', 'generated_file_name.txt', 'text/plain', ':HTML::Template'],
   
-  # Add an attachment created from a template from a scalar variable using L<HTML::Template>:
+  # Add an attachment created from a template from a scalar variable using L<HTML::Template|HTML::Template>:
   
    attachment => [$template_content, 'generated_file_name.html', 'text/html', ':HTML::Template-scalar'],
 
@@ -827,7 +984,7 @@ Using the ":Scalar" as the last element of the arrayref makes it possible to cre
 
 =head2 Advanced use of templates
 
-If an email message should be created using more than a single templating system, all the templates can share the arguments from the C<template_args> hashref. For example if both L<Template|Template-Toolkit> and L<HTML::Template> are used and we want to specify the path to the directory with templates, the C<template_args> parameter could include:
+If an email message should be created using more than a single templating system, all the templates can share the arguments from the C<template_args> hashref. For example if both L<Template-Toolkit|Template> and L<HTML::Template|HTML::Template> are used and we want to specify the path to the directory with templates, the C<template_args> parameter could include:
 
  template_args => {
   INCLUDE_PATH => '/path/to/TT/templates',
@@ -894,9 +1051,13 @@ Here is an example:
 
 The last 2 lines sent the message previously created. If you want to create an entirely new message, you should use the method C<new()> again.
 
-=head1 Compatibility
+=head1 DEPENDENCIES
 
-Starting with the version 0.10, the module tries to keep the compatibility with the programs that were using previous versions of this module, because beginning with this version, the email messages will be sent using the module L<Email::Sender::Simple> and not L<Email::Send> like before.
+L<Mail::Builder|Mail::Builder>, L<Email::Sender::Simple|Email::Sender::Simple>, L<Email::Valid|Email::Valid>, L<Module::Load|Module::Load>, L<Config::Any|Config::Any>
+
+=head1 INCOMPATIBILITIES
+
+Starting with the version 0.10, the module tries to keep the compatibility with the programs that were using previous versions of this module, because beginning with this version, the email messages will be sent using the module L<Email::Sender::Simple|Email::Sender::Simple> and not L<Email::Send|Email::Send> as before.
 
 The possible incompatibilities could appear only in the way you use the C<mail_client> key. In the previous versions, you needed to use something like:
 
@@ -918,8 +1079,6 @@ Now the promoted style is the one that uses a hashref, although it is also possi
 
 As you might have seen, the SMTP host is now specified using the "host" key and not "Host" like in the previous versions. The "host" key is the one that should be used in the new programs, but the old "Host" key is also working.
 
-For specifying the username and password for accessing an SMTP server, the module L<Email::Sender::Simple> uses the keys C<sasl_username> and C<sasl_password> and you may also use them, but you can also use the keys C<username> and C<password> like until now, because they are more simple.
-
 If you wanted to access an SMTP server on a non-standard port in older versions, you needed to provide it in the form host:port. Now there is a key named "port" that you can use instead, like in the following example:
 
   mail_client => {
@@ -931,23 +1090,25 @@ But you can still use the notation host: port like before if you want, as in:
 
   mailer_args => [Host => 'smtp.host.com:28'],
 
-Some of the mailers that could be used with the older versions of this module like L<Email::Send::Gmail> can't be used anymore but most of the features offered by them are also offered by similar C<Email::Sender::Transport::> modules.
+Some of the mailers that could be used with the older versions of this module like L<Email::Send::Gmail|Email::Send::Gmail> can't be used anymore but most of the features offered by them are also offered by similar C<Email::Sender::Transport::> modules.
 
 If you found an untreated incompatibility, please tell me.
 
-=head1 BUGS
+=head1 BUGS AND LIMITATIONS
 
 If you find some, please tell me.
 
+=head1 DIAGNOSTICS
+
 =head1 SEE ALSO
 
-L<Mail::Builder>, L<Email::Sender::Simple>, L<Template>, L<HTML::Template>, L<Config::Any>
+L<Mail::Builder|Mail::Builder>, L<Email::Sender::Simple|Email::Sender::Simple>, L<Template-Toolkit|Template>, L<HTML::Template|HTML::Template>, L<Config::Any|Config::Any>
 
 =head1 AUTHOR
 
 Octavian Rasnita <orasnita@gmail.com>
 
-=head1 COPYRIGHT
+=head1 LICENSE AND COPYRIGHT
 
 This program is free software; you can redistribute it and/or modify it under 
 the same terms as Perl itself.
