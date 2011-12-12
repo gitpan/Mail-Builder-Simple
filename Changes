@@ -1,4 +1,10 @@
 
+0.16: December 2011
+
+Corrected Mail::Builder to use Mail::Builder::Attachment instead of Mail::Builder::Attachment::Data.
+
+Mail::Builder::Attachment::Data used to (wrongly) warn that the program shouldn't use Mail::Builder::Attachment::File. This change solves this problem.
+
 0.15 - January 2011
 
 Refactored some methods and tidy up the code for making it perlcritic - friendly.

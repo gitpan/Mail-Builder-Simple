@@ -13,7 +13,7 @@ use base 'Mail::Builder';
 
 use 5.008_008;
 
-our $VERSION = '0.15';
+our $VERSION = '0.16';
 
 sub new {
     my @params = @_;
@@ -205,7 +205,7 @@ sub _process_template {
     $item->[0] = $t->process( $item->[0], $source );
 
     if ( $field eq 'attachment' ) {
-        return Mail::Builder::Attachment::Data->new( @{$item} );
+        return Mail::Builder::Attachment->new( \$item->[0], $item->[1], $item->[2] );
     }
     else {
         return $item;
